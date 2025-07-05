@@ -32,13 +32,21 @@
       ]
     },
     "DynamicProfileSource": {
-      "enum": [
-        "Windows.Terminal.Wsl",
-        "Windows.Terminal.Azure",
-        "Windows.Terminal.PowershellCore",
-        "Windows.Terminal.VisualStudio"
-      ],
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "enum": [
+            "Microsoft.WSL",
+            "Windows.Terminal.Wsl",
+            "Windows.Terminal.Azure",
+            "Windows.Terminal.PowershellCore",
+            "Windows.Terminal.VisualStudio"
+          ]
+        }
+      ]
     },
     "BellStyle": {
       "oneOf": [
@@ -2480,11 +2488,6 @@
           "minimum": 1,
           "type": "integer"
         },
-        "startOnUserLogin": {
-          "default": false,
-          "description": "When set to true, this enables the launch of Terminal at startup. Setting this to false will disable the startup task entry. If the Terminal startup task entry is disabled either by org policy or by user action this setting will have no effect.",
-          "type": "boolean"
-        },
         "firstWindowPreference": {
           "default": "defaultProfile",
           "description": "Defines what behavior the terminal takes when it starts. \"defaultProfile\" will have the terminal launch with one tab of the default profile, and \"persistedWindowLayout\" will cause the terminal to save its layout on close and reload it on open.",
@@ -2530,6 +2533,11 @@
         "showAdminShield": {
           "default": true,
           "description": "When set to true, the Terminal's tab row will display a shield icon when the Terminal is running with administrator privileges",
+          "type": "boolean"
+        },
+        "showTabsFullscreen": {
+          "default": false,
+          "description": "When set to true, tabs remain visible in fullscreen mode. When set to false, tabs will be hidden when entering fullscreen mode.",
           "type": "boolean"
         },
         "useAcrylicInTabRow": {
@@ -2912,7 +2920,7 @@
         },
         "experimental.rightClickContextMenu": {
           "default": false,
-          "description": "When set to true, right-clicking on the terminal will show a context menu. When set to false, right-click will copy",
+          "description": "When true, right-click shows a context menu; otherwise, it pastes from the clipboard or copies selection.",
           "type": "boolean"
         },
         "experimental.repositionCursorWithMouse": {
@@ -3114,12 +3122,13 @@
         },
         "pathTranslationStyle": {
           "default": "none",
-          "description": "Controls how file paths are transformed when they are dragged and dropped on the terminal. Possible values are \"none\", \"wsl\", \"cygwin\" and \"msys2\".",
+          "description": "Controls how file paths are transformed when they are dragged and dropped on the terminal. Possible values are \"none\", \"wsl\", \"cygwin\", \"msys2\" and \"mingw\".",
           "enum": [
             "none",
             "wsl",
             "cygwin",
-            "msys2"
+            "msys2",
+            "mingw"
           ],
           "type": "string"
         }

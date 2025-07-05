@@ -12,6 +12,7 @@
 #include "../../buffer/out/UTextAdapter.h"
 
 #include <til/hash.h>
+#include <til/regex.h>
 #include <winrt/Microsoft.Terminal.Core.h>
 
 using namespace winrt::Microsoft::Terminal::Core;
@@ -93,7 +94,7 @@ void Terminal::UpdateSettings(ICoreSettings settings)
 
     if (_stateMachine)
     {
-        SetVtChecksumReportSupport(settings.AllowVtChecksumReport());
+        SetOptionalFeatures(settings);
     }
 
     _getTerminalInput().ForceDisableWin32InputMode(settings.ForceVTInput());
@@ -142,7 +143,15 @@ void Terminal::UpdateAppearance(const ICoreAppearance& appearance)
     renderSettings.SetRenderMode(RenderSettings::Mode::IntenseIsBold, appearance.IntenseIsBold());
     renderSettings.SetRenderMode(RenderSettings::Mode::IntenseIsBright, appearance.IntenseIsBright());
 
-    switch (appearance.AdjustIndistinguishableColors())
+    // If AIC is set to Automatic,
+    // update the value based on if high contrast mode is enabled.
+    AdjustTextMode deducedAIC = appearance.AdjustIndistinguishableColors();
+    if (deducedAIC == AdjustTextMode::Automatic)
+    {
+        deducedAIC = _highContrastMode ? AdjustTextMode::Indexed : AdjustTextMode::Never;
+    }
+
+    switch (deducedAIC)
     {
     case AdjustTextMode::Always:
         renderSettings.SetRenderMode(RenderSettings::Mode::IndexedDistinguishableColors, false);
@@ -212,16 +221,24 @@ void Terminal::UpdateAppearance(const ICoreAppearance& appearance)
     _NotifyScrollEvent();
 }
 
+void Terminal::SetHighContrastMode(bool hc) noexcept
+{
+    _highContrastMode = hc;
+}
+
 void Terminal::SetCursorStyle(const DispatchTypes::CursorStyle cursorStyle)
 {
     auto& engine = reinterpret_cast<OutputStateMachineEngine&>(_stateMachine->Engine());
     engine.Dispatch().SetCursorStyle(cursorStyle);
 }
 
-void Terminal::SetVtChecksumReportSupport(const bool enabled)
+void Terminal::SetOptionalFeatures(winrt::Microsoft::Terminal::Core::ICoreSettings settings)
 {
     auto& engine = reinterpret_cast<OutputStateMachineEngine&>(_stateMachine->Engine());
-    engine.Dispatch().SetVtChecksumReportSupport(enabled);
+    auto features = til::enumset<ITermDispatch::OptionalFeature>{};
+    features.set(ITermDispatch::OptionalFeature::ChecksumReport, settings.AllowVtChecksumReport());
+    features.set(ITermDispatch::OptionalFeature::ClipboardWrite, settings.AllowVtClipboardWrite());
+    engine.Dispatch().SetOptionalFeatures(features);
 }
 
 bool Terminal::IsXtermBracketedPasteModeEnabled() const noexcept
@@ -452,7 +469,7 @@ void Terminal::TrySnapOnInput()
 // Parameters:
 // - <none>
 // Return value:
-// - true, if we are tracking mouse input. False, otherwise
+// - true, if we are tracking mouse input; otherwise, false.
 bool Terminal::IsTrackingMouseInput() const noexcept
 {
     return _getTerminalInput().IsTrackingMouseInput();
@@ -465,7 +482,7 @@ bool Terminal::IsTrackingMouseInput() const noexcept
 // Parameters:
 // - <none>
 // Return value:
-// - true, if we are tracking mouse input. False, otherwise
+// - true, if we are tracking mouse input; otherwise, false.
 bool Terminal::ShouldSendAlternateScroll(const unsigned int uiButton,
                                          const int32_t delta) const noexcept
 {
@@ -478,7 +495,7 @@ bool Terminal::ShouldSendAlternateScroll(const unsigned int uiButton,
 // - The position relative to the viewport
 std::wstring Terminal::GetHyperlinkAtViewportPosition(const til::point viewportPos)
 {
-    return GetHyperlinkAtBufferPosition(_ConvertToBufferCell(viewportPos));
+    return GetHyperlinkAtBufferPosition(_ConvertToBufferCell(viewportPos, false));
 }
 
 std::wstring Terminal::GetHyperlinkAtBufferPosition(const til::point bufferPos)
@@ -502,12 +519,8 @@ std::wstring Terminal::GetHyperlinkAtBufferPosition(const til::point bufferPos)
         result = GetHyperlinkIntervalFromViewportPosition(viewportPos);
         if (result.has_value())
         {
-            // GetPlainText and _ConvertToBufferCell work with inclusive coordinates, but interval's
-            // stop point is (horizontally) exclusive, so let's just update it.
-            result->stop.x--;
-
-            result->start = _ConvertToBufferCell(result->start);
-            result->stop = _ConvertToBufferCell(result->stop);
+            result->start = _ConvertToBufferCell(result->start, false);
+            result->stop = _ConvertToBufferCell(result->stop, true);
         }
     }
     else
@@ -544,7 +557,7 @@ std::wstring Terminal::GetHyperlinkAtBufferPosition(const til::point bufferPos)
 // - The hyperlink ID
 uint16_t Terminal::GetHyperlinkIdAtViewportPosition(const til::point viewportPos)
 {
-    return _activeBuffer().GetCellDataAt(_ConvertToBufferCell(viewportPos))->TextAttr().GetHyperlinkId();
+    return _activeBuffer().GetCellDataAt(_ConvertToBufferCell(viewportPos, false))->TextAttr().GetHyperlinkId();
 }
 
 // Method description:
@@ -586,7 +599,7 @@ std::optional<PointTree::interval> Terminal::GetHyperlinkIntervalFromViewportPos
 // - vkey: The vkey of the last pressed key.
 // - scanCode: The scan code of the last pressed key.
 // - states: The Microsoft::Terminal::Core::ControlKeyStates representing the modifier key states.
-// - keyDown: If true, the key was pressed, otherwise the key was released.
+// - keyDown: If true, the key was pressed; otherwise, the key was released.
 // Return Value:
 // - true if we translated the key event, and it should not be processed any further.
 // - false if we did not translate the key, and it should be processed into a character.
@@ -908,7 +921,7 @@ void Terminal::_StoreKeyEvent(const WORD vkey, const WORD scanCode) noexcept
 // Arguments:
 // - scanCode: The scan code.
 // Return Value:
-// - The key code matching the given scan code. Otherwise 0.
+// - The key code matching the given scan code. Otherwise, 0.
 WORD Terminal::_TakeVirtualKeyFromLastKeyEvent(const WORD scanCode) noexcept
 {
     const auto codes = _lastKeyEventCodes.value_or(KeyEventCodes{});
@@ -1379,7 +1392,7 @@ struct URegularExpressionInterner
     //
     // An alternative approach would be to not make this method thread-safe and give each
     // Terminal instance its own cache. I'm not sure which approach would have been better.
-    ICU::unique_uregex Intern(const std::wstring_view& pattern)
+    til::ICU::unique_uregex Intern(const std::wstring_view& pattern)
     {
         UErrorCode status = U_ZERO_ERROR;
 
@@ -1387,14 +1400,14 @@ struct URegularExpressionInterner
             const auto guard = _lock.lock_shared();
             if (const auto it = _cache.find(pattern); it != _cache.end())
             {
-                return ICU::unique_uregex{ uregex_clone(it->second.re.get(), &status) };
+                return til::ICU::unique_uregex{ uregex_clone(it->second.re.get(), &status) };
             }
         }
 
         // Even if the URegularExpression creation failed, we'll insert it into the cache, because there's no point in retrying.
         // (Apart from OOM but in that case this application will crash anyways in 3.. 2.. 1..)
-        auto re = ICU::CreateRegex(pattern, 0, &status);
-        ICU::unique_uregex clone{ uregex_clone(re.get(), &status) };
+        auto re = til::ICU::CreateRegex(pattern, 0, &status);
+        til::ICU::unique_uregex clone{ uregex_clone(re.get(), &status) };
         std::wstring key{ pattern };
 
         const auto guard = _lock.lock_exclusive();
@@ -1416,7 +1429,7 @@ struct URegularExpressionInterner
 private:
     struct CacheValue
     {
-        ICU::unique_uregex re;
+        til::ICU::unique_uregex re;
         size_t generation = 0;
     };
 
@@ -1466,7 +1479,6 @@ PointTree Terminal::_getPatterns(til::CoordType beg, til::CoordType end) const
                 // PointTree uses half-open ranges and viewport-relative coordinates.
                 range.start.y -= beg;
                 range.end.y -= beg;
-                range.end.x++;
                 intervals.push_back(PointTree::interval(range.start, range.end, 0));
             } while (uregex_findNext(re.get(), &status));
         }
@@ -1576,10 +1588,10 @@ void Terminal::SerializeMainBuffer(const wchar_t* destination) const
 
 void Terminal::ColorSelection(const TextAttribute& attr, winrt::Microsoft::Terminal::Core::MatchMode matchMode)
 {
-    const auto colorSelection = [this](const til::point coordStart, const til::point coordEnd, const TextAttribute& attr) {
+    const auto colorSelection = [this](const til::point coordStartInclusive, const til::point coordEndExclusive, const TextAttribute& attr) {
         auto& textBuffer = _activeBuffer();
-        const auto spanLength = textBuffer.SpanLength(coordStart, coordEnd);
-        textBuffer.Write(OutputCellIterator(attr, spanLength), coordStart);
+        const auto spanLength = textBuffer.GetSize().CompareInBounds(coordEndExclusive, coordStartInclusive, true);
+        textBuffer.Write(OutputCellIterator(attr, spanLength), coordStartInclusive);
     };
 
     for (const auto [start, end] : _GetSelectionSpans())

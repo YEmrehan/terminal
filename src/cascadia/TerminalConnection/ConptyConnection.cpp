@@ -313,6 +313,13 @@ namespace winrt::Microsoft::Terminal::TerminalConnection::implementation
         }
         CATCH_LOG()
 
+        try
+        {
+            auto processImageName{ wil::QueryFullProcessImageNameW<std::wstring>(_piClient.hProcess) };
+            _clientName = std::filesystem::path{ std::move(processImageName) }.filename().wstring();
+        }
+        CATCH_LOG()
+
         _pipe = std::move(pipe.server);
         *in = pipe.client.release();
         *out = pipeClientClone.release();
@@ -428,6 +435,20 @@ namespace winrt::Microsoft::Terminal::TerminalConnection::implementation
             TerminalOutput.raise(L"\r\n");
             TerminalOutput.raise(badPathText);
         }
+        // If the requested action requires elevation, display appropriate message
+        else if (hr == HRESULT_FROM_WIN32(ERROR_ELEVATION_REQUIRED))
+        {
+            const auto elevationText = RS_(L"ElevationRequired");
+            TerminalOutput.raise(L"\r\n");
+            TerminalOutput.raise(elevationText);
+        }
+        // If the requested executable was not found, display appropriate message
+        else if (hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
+        {
+            const auto fileNotFoundText = RS_(L"FileNotFound");
+            TerminalOutput.raise(L"\r\n");
+            TerminalOutput.raise(fileNotFoundText);
+        }
 
         _transitionToState(ConnectionState::Failed);
 
@@ -542,13 +563,13 @@ namespace winrt::Microsoft::Terminal::TerminalConnection::implementation
         }
     }
 
-    void ConptyConnection::ClearBuffer()
+    void ConptyConnection::ClearBuffer(bool keepCursorRow)
     {
         // If we haven't connected yet, then we really don't need to do
         // anything. The connection should already start clear!
         if (_isConnected())
         {
-            THROW_IF_FAILED(ConptyClearPseudoConsole(_hPC.get()));
+            THROW_IF_FAILED(ConptyClearPseudoConsole(_hPC.get(), keepCursorRow));
         }
     }
 
@@ -780,12 +801,12 @@ namespace winrt::Microsoft::Terminal::TerminalConnection::implementation
 
     void ConptyConnection::StartInboundListener()
     {
-        THROW_IF_FAILED(CTerminalHandoff::s_StartListening(&ConptyConnection::NewHandoff));
-    }
+        static const auto init = []() noexcept {
+            CTerminalHandoff::s_setCallback(&ConptyConnection::NewHandoff);
+            return true;
+        }();
 
-    void ConptyConnection::StopInboundListener()
-    {
-        THROW_IF_FAILED(CTerminalHandoff::s_StopListening());
+        CTerminalHandoff::s_StartListening();
     }
 
     // Function Description:

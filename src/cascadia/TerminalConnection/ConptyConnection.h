@@ -25,7 +25,7 @@ namespace winrt::Microsoft::Terminal::TerminalConnection::implementation
         void Resize(uint32_t rows, uint32_t columns);
         void ResetSize();
         void Close() noexcept;
-        void ClearBuffer();
+        void ClearBuffer(bool keepCursorRow);
 
         void ShowHide(const bool show);
 
@@ -36,7 +36,6 @@ namespace winrt::Microsoft::Terminal::TerminalConnection::implementation
         WORD ShowWindow() const noexcept;
 
         static void StartInboundListener();
-        static void StopInboundListener();
 
         static winrt::event_token NewConnection(const NewConnectionHandler& handler);
         static void NewConnection(const winrt::event_token& token);

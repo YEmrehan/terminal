@@ -219,7 +219,7 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
                 // into the path TextBox, we properly update the checkbox and stored
                 // _lastBgImagePath. Without this, then we'll permanently hide the text
                 // box, prevent it from ever being changed again.
-                _NotifyChanges(L"UseDesktopBGImage", L"BackgroundImageSettingsVisible");
+                _NotifyChanges(L"UseDesktopBGImage", L"BackgroundImageSettingsVisible", L"CurrentBackgroundImagePath");
             }
             else if (viewModelProperty == L"BackgroundImageAlignment")
             {
@@ -927,7 +927,7 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         else
         {
             // Append vertical alignment to the resource key
-            switch (alignment & static_cast<ConvergedAlignment>(0x0F))
+            switch (alignment & static_cast<ConvergedAlignment>(0xF0))
             {
             case ConvergedAlignment::Vertical_Bottom:
                 alignmentResourceKey = alignmentResourceKey + L"Bottom";
@@ -938,7 +938,7 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
             }
 
             // Append horizontal alignment to the resource key
-            switch (alignment & static_cast<ConvergedAlignment>(0xF0))
+            switch (alignment & static_cast<ConvergedAlignment>(0x0F))
             {
             case ConvergedAlignment::Horizontal_Left:
                 alignmentResourceKey = alignmentResourceKey + L"Left";
@@ -954,7 +954,21 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         return GetLibraryResourceString(alignmentResourceKey);
     }
 
-    bool AppearanceViewModel::UseDesktopBGImage()
+    hstring AppearanceViewModel::CurrentBackgroundImagePath() const
+    {
+        const auto bgImagePath = BackgroundImagePath();
+        if (bgImagePath.empty())
+        {
+            return RS_(L"Appearance_BackgroundImageNone");
+        }
+        else if (bgImagePath == L"desktopWallpaper")
+        {
+            return RS_(L"Profile_UseDesktopImage/Content");
+        }
+        return bgImagePath;
+    }
+
+    bool AppearanceViewModel::UseDesktopBGImage() const
     {
         return BackgroundImagePath() == L"desktopWallpaper";
     }
@@ -983,7 +997,7 @@ namespace winrt::Microsoft::Terminal::Settings::Editor::implementation
         }
     }
 
-    bool AppearanceViewModel::BackgroundImageSettingsVisible()
+    bool AppearanceViewModel::BackgroundImageSettingsVisible() const
     {
         return !BackgroundImagePath().empty();
     }

@@ -71,7 +71,7 @@ namespace winrt::TerminalApp::implementation
 
         void Create();
 
-        void PersistState();
+        void PersistState(bool serializeBuffer);
 
         void UpdateSettings(winrt::TerminalApp::SettingsLoadEventArgs args);
 
@@ -89,6 +89,7 @@ namespace winrt::TerminalApp::implementation
         bool Fullscreen() const;
         void Maximized(bool newMaximized);
         bool AlwaysOnTop() const;
+        bool ShowTabsFullscreen() const;
         bool AutoHideWindow();
         void IdentifyWindow();
 
@@ -106,6 +107,7 @@ namespace winrt::TerminalApp::implementation
         Microsoft::Terminal::Settings::Model::LaunchMode GetLaunchMode();
         bool GetShowTabsInTitlebar();
         bool GetInitialAlwaysOnTop();
+        bool GetInitialShowTabsFullscreen();
         float CalcSnappedDimension(const bool widthOrHeight, const float dimension) const;
 
         Windows::UI::Xaml::UIElement GetRoot() noexcept;
@@ -165,10 +167,9 @@ namespace winrt::TerminalApp::implementation
         // ALSO: If you add any UIElements as roots here, make sure they're
         // updated in _ApplyTheme. The root currently is _root.
         winrt::com_ptr<TerminalPage> _root{ nullptr };
-        winrt::Windows::UI::Xaml::Controls::ContentDialog _dialog{ nullptr };
-        std::shared_mutex _dialogLock;
 
         wil::com_ptr<CommandlineArgs> _appArgs{ nullptr };
+        winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection _startupConnection{ nullptr };
         bool _hasCommandLineArguments{ false };
         bool _gotSettingsStartupActions{ false };
         std::vector<winrt::Microsoft::Terminal::Settings::Model::ActionAndArgs> _settingsStartupArgs{};
@@ -189,7 +190,7 @@ namespace winrt::TerminalApp::implementation
                                    const winrt::hstring& contentKey,
                                    HRESULT settingsLoadedResult,
                                    const winrt::hstring& exceptionText);
-        void _ShowLoadWarningsDialog(const Windows::Foundation::Collections::IVector<Microsoft::Terminal::Settings::Model::SettingsLoadWarnings>& warnings);
+        void _ShowLoadWarningsDialog(const IInspectable& sender, const Windows::Foundation::Collections::IVectorView<Microsoft::Terminal::Settings::Model::SettingsLoadWarnings>& warnings);
 
         bool _IsKeyboardServiceEnabled();
 

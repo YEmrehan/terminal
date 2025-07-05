@@ -517,7 +517,7 @@ namespace winrt::TerminalApp::implementation
             else
             {
                 // Mark as handled only when the move succeeded (e.g. when there
-                // is a pane to move to), otherwise mark as unhandled so the
+                // is a pane to move to); otherwise, mark as unhandled so the
                 // keychord can propagate to the terminal (GH#6129)
                 const auto moveSucceeded = _MoveFocus(realArgs.FocusDirection());
                 args.Handled(moveSucceeded);
@@ -752,13 +752,11 @@ namespace winrt::TerminalApp::implementation
     {
         if (const auto& realArgs = actionArgs.ActionArgs().try_as<ExecuteCommandlineArgs>())
         {
-            auto actions = winrt::single_threaded_vector<ActionAndArgs>(
-                TerminalPage::ConvertExecuteCommandlineToActions(realArgs));
-
-            if (actions.Size() != 0)
+            auto actions = ConvertExecuteCommandlineToActions(realArgs);
+            if (!actions.empty())
             {
                 actionArgs.Handled(true);
-                ProcessStartupActions(actions, false);
+                ProcessStartupActions(std::move(actions));
             }
         }
     }

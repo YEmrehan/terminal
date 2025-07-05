@@ -19,7 +19,7 @@ public:
     static void ShowCursorMaybe(const UINT message) noexcept;
 
     IslandWindow() noexcept;
-    virtual ~IslandWindow() override;
+    ~IslandWindow();
 
     virtual void MakeWindow() noexcept;
     virtual void Close();
@@ -27,13 +27,13 @@ public:
     virtual void OnSize(const UINT width, const UINT height);
     HWND GetInteropHandle() const;
 
-    [[nodiscard]] virtual LRESULT MessageHandler(UINT const message, WPARAM const wparam, LPARAM const lparam) noexcept override;
+    [[nodiscard]] virtual LRESULT MessageHandler(UINT const message, WPARAM const wparam, LPARAM const lparam) noexcept;
 
-    [[nodiscard]] LRESULT OnNcCreate(WPARAM wParam, LPARAM lParam) noexcept override;
+    [[nodiscard]] LRESULT OnNcCreate(WPARAM wParam, LPARAM lParam) noexcept;
 
-    void OnResize(const UINT width, const UINT height) override;
-    void OnMinimize() override;
-    void OnRestore() override;
+    void OnResize(const UINT width, const UINT height);
+    void OnMinimize();
+    void OnRestore();
     virtual void OnAppInitialized();
     virtual void SetContent(winrt::Windows::UI::Xaml::UIElement content);
     virtual void OnApplicationThemeChanged(const winrt::Windows::UI::Xaml::ElementTheme& requestedTheme);
@@ -50,6 +50,7 @@ public:
     void FullscreenChanged(const bool fullscreen);
     void SetAlwaysOnTop(const bool alwaysOnTop);
     void ShowWindowChanged(const bool showOrHide);
+    virtual void SetShowTabsFullscreen(const bool newShowTabsFullscreen);
 
     void FlashTaskbar();
     void SetTaskbarProgress(const size_t state, const size_t progress);
@@ -109,6 +110,7 @@ protected:
     bool _borderless{ false };
     bool _alwaysOnTop{ false };
     bool _fullscreen{ false };
+    bool _showTabsFullscreen{ false };
     bool _fWasMaximizedBeforeFullscreen{ false };
     RECT _rcWindowBeforeFullscreen{};
     RECT _rcWorkBeforeFullscreen{};
@@ -116,6 +118,7 @@ protected:
 
     virtual void _SetIsBorderless(const bool borderlessEnabled);
     virtual void _SetIsFullscreen(const bool fullscreenEnabled);
+
     void _RestoreFullscreenPosition(const RECT& rcWork);
     void _SetFullscreenPosition(const RECT& rcMonitor, const RECT& rcWork);
 

@@ -49,7 +49,7 @@ static std::vector<winrt::hstring> commandlineToArgArray(const wchar_t* commandL
 }
 
 // Returns the length of a double-null encoded string *excluding* the trailing double-null character.
-static std::wstring_view stringFromDoubleNullTerminated(const wchar_t* beg)
+static wil::zwstring_view stringFromDoubleNullTerminated(const wchar_t* beg)
 {
     auto end = beg;
 
@@ -57,7 +57,7 @@ static std::wstring_view stringFromDoubleNullTerminated(const wchar_t* beg)
     {
     }
 
-    return { beg, end };
+    return { beg, gsl::narrow_cast<size_t>(end - beg) };
 }
 
 // Appends an uint32_t to a byte vector.
@@ -78,36 +78,39 @@ static const uint8_t* deserializeUint32(const uint8_t* it, const uint8_t* end, u
     return it + sizeof(uint32_t);
 }
 
-// Writes an uint32_t length prefix, followed by the string data, to the output vector.
-static void serializeString(std::vector<uint8_t>& out, std::wstring_view str)
+// Writes a null-terminated string to `out`: A uint32_t length prefix,
+// *including null byte*, followed by the string data, followed by the null-terminator.
+static void serializeString(std::vector<uint8_t>& out, wil::zwstring_view str)
 {
     const auto ptr = reinterpret_cast<const uint8_t*>(str.data());
-    const auto len = gsl::narrow<uint32_t>(str.size());
-    serializeUint32(out, len);
+    const auto len = str.size() + 1;
+    serializeUint32(out, gsl::narrow<uint32_t>(len));
     out.insert(out.end(), ptr, ptr + len * sizeof(wchar_t));
 }
 
-// Parses the next string from the input iterator. Performs bounds-checks.
+// Counter-part to `serializeString`. Performs bounds-checks.
 // Returns an iterator that points past it.
-static const uint8_t* deserializeString(const uint8_t* it, const uint8_t* end, std::wstring_view& str)
+static const uint8_t* deserializeString(const uint8_t* it, const uint8_t* end, wil::zwstring_view& str)
 {
     uint32_t len;
     it = deserializeUint32(it, end, len);
 
-    if (static_cast<size_t>(end - it) < len * sizeof(wchar_t))
+    const auto bytes = static_cast<size_t>(len) * sizeof(wchar_t);
+
+    if (bytes == 0 || static_cast<size_t>(end - it) < bytes)
     {
         throw std::out_of_range("Not enough data for string content");
     }
 
-    str = { reinterpret_cast<const wchar_t*>(it), len };
-    return it + len * sizeof(wchar_t);
+    str = { reinterpret_cast<const wchar_t*>(it), len - 1 };
+    return it + bytes;
 }
 
 struct Handoff
 {
-    std::wstring_view args;
-    std::wstring_view env;
-    std::wstring_view cwd;
+    wil::zwstring_view args;
+    wil::zwstring_view env;
+    wil::zwstring_view cwd;
     uint32_t show;
 };
 
@@ -246,6 +249,8 @@ void WindowEmperor::CreateNewWindow(winrt::TerminalApp::WindowRequestedArgs args
 
     auto host = std::make_shared<AppHost>(this, _app.Logic(), std::move(args));
     host->Initialize();
+
+    _windowCount += 1;
     _windows.emplace_back(std::move(host));
 }
 
@@ -312,6 +317,7 @@ void WindowEmperor::HandleCommandlineArgs(int nCmdShow)
     _createMessageWindow(windowClassName.c_str());
     _setupGlobalHotkeys();
     _checkWindowsForNotificationIcon();
+    _setupSessionPersistence(_app.Logic().Settings().GlobalSettings().ShouldUsePersistedLayout());
 
     // When the settings change, we'll want to update our global hotkeys
     // and our notification icon based on the new settings.
@@ -321,6 +327,7 @@ void WindowEmperor::HandleCommandlineArgs(int nCmdShow)
             _assertIsMainThread();
             _setupGlobalHotkeys();
             _checkWindowsForNotificationIcon();
+            _setupSessionPersistence(args.NewSettings().GlobalSettings().ShouldUsePersistedLayout());
         }
     });
 
@@ -341,20 +348,31 @@ void WindowEmperor::HandleCommandlineArgs(int nCmdShow)
             for (const auto layout : layouts)
             {
                 hstring args[] = { L"wt", L"-w", L"new", L"-s", winrt::to_hstring(startIdx) };
-                _dispatchCommandline({ args, cwd, showCmd, env });
+                _dispatchCommandlineCommon(args, cwd, env, showCmd);
                 startIdx += 1;
             }
         }
 
-        // Create another window if needed: There aren't any yet, or we got an explicit command line.
         const auto args = commandlineToArgArray(GetCommandLineW());
-        if (_windows.empty() || args.size() != 1)
-        {
-            _dispatchCommandline({ args, cwd, showCmd, env });
-        }
 
-        // If we created no windows, e.g. because the args are "/?" we can just exit now.
-        _postQuitMessageIfNeeded();
+        if (args.size() == 2 && args[1] == L"-Embedding")
+        {
+            // We were launched for ConPTY handoff. We have no windows and also don't want to exit.
+            //
+            // TODO: Here we could start a timer and exit after, say, 5 seconds
+            // if no windows are created. But that's a minor concern.
+        }
+        else
+        {
+            // Create another window if needed: There aren't any yet, OR we got an explicit command line.
+            if (_windows.empty() || args.size() != 1)
+            {
+                _dispatchCommandlineCommon(args, cwd, env, showCmd);
+            }
+
+            // If we created no windows, e.g. because the args are "/?" we can just exit now.
+            _postQuitMessageIfNeeded();
+        }
     }
 
     // ALWAYS change the _real_ CWD of the Terminal to system32,
@@ -382,6 +400,19 @@ void WindowEmperor::HandleCommandlineArgs(int nCmdShow)
         }
     }
 
+    {
+        TerminalConnection::ConptyConnection::NewConnection([this](TerminalConnection::ConptyConnection conn) {
+            TerminalApp::CommandlineArgs args;
+            args.ShowWindowCommand(conn.ShowWindow());
+            args.Connection(std::move(conn));
+            _dispatchCommandline(std::move(args));
+            _summonWindow(SummonWindowSelectionArgs{
+                .SummonBehavior = nullptr,
+            });
+        });
+        TerminalConnection::ConptyConnection::StartInboundListener();
+    }
+
     // Main message loop. It pumps all windows.
     bool loggedInteraction = false;
     MSG msg{};
@@ -395,10 +426,24 @@ void WindowEmperor::HandleCommandlineArgs(int nCmdShow)
         {
             if (!loggedInteraction)
             {
+#if defined(WT_BRANDING_RELEASE)
+                constexpr uint8_t branding = 3;
+#elif defined(WT_BRANDING_PREVIEW)
+                constexpr uint8_t branding = 2;
+#elif defined(WT_BRANDING_CANARY)
+                constexpr uint8_t branding = 1;
+#else
+                constexpr uint8_t branding = 0;
+#endif
+                const uint8_t distribution = IsPackaged()                             ? 2 :
+                                             _app.Logic().Settings().IsPortableMode() ? 1 :
+                                                                                        0;
                 TraceLoggingWrite(
                     g_hWindowsTerminalProvider,
                     "SessionBecameInteractive",
                     TraceLoggingDescription("Event emitted when the session was interacted with"),
+                    TraceLoggingValue(branding, "Branding"),
+                    TraceLoggingValue(distribution, "Distribution"),
                     TraceLoggingKeyword(MICROSOFT_KEYWORD_MEASURES),
                     TelemetryPrivacyDataTag(PDT_ProductAndServiceUsage));
                 loggedInteraction = true;
@@ -570,6 +615,16 @@ void WindowEmperor::_dispatchCommandline(winrt::TerminalApp::CommandlineArgs arg
     }
 }
 
+void WindowEmperor::_dispatchCommandlineCommon(winrt::array_view<const winrt::hstring> args, wil::zwstring_view currentDirectory, wil::zwstring_view envString, uint32_t showWindowCommand)
+{
+    winrt::TerminalApp::CommandlineArgs c;
+    c.Commandline(args);
+    c.CurrentDirectory(currentDirectory);
+    c.CurrentEnvironment(envString);
+    c.ShowWindowCommand(showWindowCommand);
+    _dispatchCommandline(std::move(c));
+}
+
 // This is an implementation-detail of _dispatchCommandline().
 safe_void_coroutine WindowEmperor::_dispatchCommandlineCurrentDesktop(winrt::TerminalApp::CommandlineArgs args)
 {
@@ -735,9 +790,14 @@ void WindowEmperor::_createMessageWindow(const wchar_t* className)
     StringCchCopy(_notificationIcon.szTip, ARRAYSIZE(_notificationIcon.szTip), appNameLoc.c_str());
 }
 
+// Posts a WM_QUIT as soon as we have no reason to exist anymore.
+// That basically means no windows and no message boxes.
 void WindowEmperor::_postQuitMessageIfNeeded() const
 {
-    if (_messageBoxCount <= 0 && _windows.empty() && !_app.Logic().Settings().GlobalSettings().AllowHeadless())
+    if (
+        _messageBoxCount <= 0 &&
+        _windowCount <= 0 &&
+        !_app.Logic().Settings().GlobalSettings().AllowHeadless())
     {
         PostQuitMessage(0);
     }
@@ -771,20 +831,37 @@ LRESULT WindowEmperor::_messageHandler(HWND window, UINT const message, WPARAM c
         {
         case WM_CLOSE_TERMINAL_WINDOW:
         {
-            const auto host = reinterpret_cast<AppHost*>(lParam);
-            auto it = _windows.begin();
-            const auto end = _windows.end();
+            const auto globalSettings = _app.Logic().Settings().GlobalSettings();
+            // Keep the last window in the array so that we can persist it on exit.
+            // We check for AllowHeadless(), as that being true prevents us from ever quitting in the first place.
+            // (= If we avoided closing the last window you wouldn't be able to reach a headless state.)
+            const auto shouldKeepWindow =
+                _windows.size() == 1 &&
+                globalSettings.ShouldUsePersistedLayout() &&
+                !globalSettings.AllowHeadless();
 
-            for (; it != end; ++it)
+            if (!shouldKeepWindow)
             {
-                if (host == it->get())
+                // Did the window counter get out of sync? It shouldn't.
+                assert(_windowCount == gsl::narrow_cast<int32_t>(_windows.size()));
+
+                const auto host = reinterpret_cast<AppHost*>(lParam);
+                auto it = _windows.begin();
+                const auto end = _windows.end();
+
+                for (; it != end; ++it)
                 {
-                    host->Close();
-                    _windows.erase(it);
-                    break;
+                    if (host == it->get())
+                    {
+                        host->Close();
+                        _windows.erase(it);
+                        break;
+                    }
                 }
             }
 
+            // Counterpart specific to CreateNewWindow().
+            _windowCount -= 1;
             _postQuitMessageIfNeeded();
             return 0;
         }
@@ -855,11 +932,8 @@ LRESULT WindowEmperor::_messageHandler(HWND window, UINT const message, WPARAM c
             if (const auto cds = reinterpret_cast<COPYDATASTRUCT*>(lParam); cds->dwData == TERMINAL_HANDOFF_MAGIC)
             {
                 const auto handoff = deserializeHandoffPayload(static_cast<const uint8_t*>(cds->lpData), static_cast<const uint8_t*>(cds->lpData) + cds->cbData);
-                const winrt::hstring args{ handoff.args };
-                const winrt::hstring env{ handoff.env };
-                const winrt::hstring cwd{ handoff.cwd };
-                const auto argv = commandlineToArgArray(args.c_str());
-                _dispatchCommandline({ argv, cwd, gsl::narrow_cast<uint32_t>(handoff.show), env });
+                const auto argv = commandlineToArgArray(handoff.args.c_str());
+                _dispatchCommandlineCommon(argv, handoff.cwd, handoff.env, handoff.show);
             }
             return 0;
         case WM_HOTKEY:
@@ -873,7 +947,8 @@ LRESULT WindowEmperor::_messageHandler(HWND window, UINT const message, WPARAM c
             RegisterApplicationRestart(nullptr, RESTART_NO_CRASH | RESTART_NO_HANG);
             return TRUE;
         case WM_ENDSESSION:
-            _forcePersistence = true;
+            _finalizeSessionPersistence();
+            _skipPersistence = true;
             PostQuitMessage(0);
             return 0;
         default:
@@ -897,21 +972,53 @@ LRESULT WindowEmperor::_messageHandler(HWND window, UINT const message, WPARAM c
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
-void WindowEmperor::_finalizeSessionPersistence() const
+void WindowEmperor::_setupSessionPersistence(bool enabled)
 {
-    const auto state = ApplicationState::SharedInstance();
+    if (!enabled)
+    {
+        _persistStateTimer.Stop();
+        return;
+    }
+    _persistStateTimer.Interval(std::chrono::minutes(5));
+    _persistStateTimer.Tick([&](auto&&, auto&&) {
+        _persistState(ApplicationState::SharedInstance(), false);
+    });
+    _persistStateTimer.Start();
+}
 
-    if (_forcePersistence || _app.Logic().Settings().GlobalSettings().ShouldUsePersistedLayout())
+void WindowEmperor::_persistState(const ApplicationState& state, bool serializeBuffer) const
+{
+    // Calling an `ApplicationState` setter triggers a write to state.json.
+    // With this if condition we avoid an unnecessary write when persistence is disabled.
+    if (state.PersistedWindowLayouts())
     {
         state.PersistedWindowLayouts(nullptr);
+    }
+
+    if (_app.Logic().Settings().GlobalSettings().ShouldUsePersistedLayout())
+    {
         for (const auto& w : _windows)
         {
-            w->Logic().PersistState();
+            w->Logic().PersistState(serializeBuffer);
         }
     }
 
-    // Ensure to write the state.json before we TerminateProcess()
+    // Ensure to write the state.json
     state.Flush();
+}
+
+void WindowEmperor::_finalizeSessionPersistence() const
+{
+    if (_skipPersistence)
+    {
+        // We received WM_ENDSESSION and persisted the state.
+        // We don't need to persist it again.
+        return;
+    }
+
+    const auto state = ApplicationState::SharedInstance();
+
+    _persistState(state, true);
 
     if (_needsPersistenceCleanup)
     {
@@ -1125,7 +1232,7 @@ void WindowEmperor::_hotkeyPressed(const long hotkeyIndex)
     const wil::unique_environstrings_ptr envMem{ GetEnvironmentStringsW() };
     const auto env = stringFromDoubleNullTerminated(envMem.get());
     const auto cwd = wil::GetCurrentDirectoryW<std::wstring>();
-    _dispatchCommandline({ argv, cwd, SW_SHOWDEFAULT, std::move(env) });
+    _dispatchCommandlineCommon(argv, cwd, env, SW_SHOWDEFAULT);
 }
 
 void WindowEmperor::_registerHotKey(const int index, const winrt::Microsoft::Terminal::Control::KeyChord& hotkey) noexcept
